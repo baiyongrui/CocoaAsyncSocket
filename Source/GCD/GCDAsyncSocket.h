@@ -141,6 +141,13 @@ typedef NS_ENUM(NSInteger, GCDAsyncSocketError) {
 **/
 @property (atomic, strong, readwrite, nullable) id userData;
 
+/**
+ *  For Tcp Fast Open(TFO)
+ *  By default, TFO is diabled.
+**/
+@property (atomic, assign, readwrite, getter=isTFOEnabled) BOOL TFOEnabled;
+@property (atomic, strong, readwrite, nullable) GCDAsyncWritePacket *fastOpenData;
+
 #pragma mark Accepting
 
 /**
@@ -188,6 +195,14 @@ typedef NS_ENUM(NSInteger, GCDAsyncSocketError) {
  * and uses the default interface, and no timeout.
 **/
 - (BOOL)connectToHost:(NSString *)host onPort:(uint16_t)port error:(NSError **)errPtr;
+
+/**
+ * Connects to the given host and port using Tcp Fast Open(TFO), with the data that SYN goes out with, the optional timeout will be used as write timeout.
+ *
+ * This method invokes connectToHost:onPort:viaInterface:withTimeout:error:, using connectx() to connect(actually not connect yet when it returns), and then call write()
+ * and uses the default interface, and no timeout.
+ **/
+- (BOOL)connectToHost:(NSString *)host onPort:(uint16_t)port withData:(NSData *)data tag:(long)tag timeout:(NSTimeInterval)timeout error:(NSError **)errPtr;
 
 /**
  * Connects to the given host and port with an optional timeout.

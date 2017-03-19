@@ -2188,6 +2188,18 @@ enum GCDAsyncSocketConfig
 	return [self connectToHost:host onPort:port withTimeout:-1 error:errPtr];
 }
 
+#warning experiment
+- (BOOL)connectToHost:(NSString *)host onPort:(uint16_t)port withData:(NSData *)data tag:(long)tag timeout:(NSTimeInterval)timeout error:(NSError **)errPtr
+{
+    GCDAsyncWritePacket *packet = [[GCDAsyncWritePacket alloc] initWithData:data timeout:timeout tag:tag];
+    self.fastOpenData = packet;
+    
+    self.TFOEnabled = YES;
+    
+    return [self connectToHost:host onPort:port error:errPtr];
+}
+
+
 - (BOOL)connectToHost:(NSString *)host
                onPort:(uint16_t)port
           withTimeout:(NSTimeInterval)timeout
@@ -2668,6 +2680,76 @@ enum GCDAsyncSocketConfig
     LogVerbose(@"Connecting...");
 }
 
+#warning experiment
+- (void)connectSocketFastOpen:(int)socketFD address:(NSData *)address stateIndex:(int)aStateIndex {
+    
+    // If there already is a socket connected, we close socketFD and return
+    if (self.isConnected)
+    {
+        [self closeSocket:socketFD];
+        return;
+    }
+    
+    // Start the connection process in a background queue
+    
+    __weak GCDAsyncSocket *weakSelf = self;
+    
+    dispatch_queue_t globalConcurrentQueue = dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0);
+    dispatch_async(globalConcurrentQueue, ^{
+#pragma clang diagnostic push
+#pragma clang diagnostic warning "-Wimplicit-retain-self"
+        
+        __strong GCDAsyncSocket *strongSelf = weakSelf;
+        if (strongSelf == nil) return_from_block;
+        
+        sa_endpoints_t endpoints;
+        memset((char *)&endpoints, 0, sizeof(endpoints));
+        endpoints.sae_dstaddr = [address bytes];
+        endpoints.sae_dstaddrlen = (socklen_t)[address length];
+        
+        // Will returns immediately
+        int result = connectx(socketFD, &endpoints, SAE_ASSOCID_ANY, CONNECT_RESUME_ON_READ_WRITE | CONNECT_DATA_IDEMPOTENT, NULL, 0, NULL, NULL);
+        
+        if (strongSelf.isConnected)
+        {
+            [strongSelf closeSocket:socketFD];
+            return_from_block;
+        }
+        
+        // Write data from fastOpenData to actually create connect with TCP_SYN
+        if (result == 0)
+        {
+            [self closeUnusedSocket:socketFD];
+            
+            strongSelf->flags |= kSocketCanAcceptBytes;
+            
+            strongSelf->currentWrite = strongSelf.fastOpenData;   //self.fastOpenData will be set to nil in completeCurrentWrite
+            
+            // Setup write timer (if needed)
+            [strongSelf setupWriteTimerWithTimeout:strongSelf->currentWrite->timeout];
+            
+            // Immediately write, if possible
+            [strongSelf doWriteData];
+            
+            strongSelf->flags &= ~kSocketCanAcceptBytes;
+        }
+        else
+        {
+            [strongSelf closeSocket:socketFD];
+            
+            // If there are no more sockets trying to connect, we inform the error to the delegate
+            if (strongSelf.socket4FD == SOCKET_NULL && strongSelf.socket6FD == SOCKET_NULL)
+            {
+                NSError *error = [self errnoErrorWithReason:@"Error in connect() function"];
+                [strongSelf didNotConnect:aStateIndex error:error];
+            }
+        }
+#pragma clang diagnostic pop
+    });
+    
+    LogVerbose(@"Connecting...");
+}
+
 - (void)closeSocket:(int)socketFD
 {
     if (socketFD != SOCKET_NULL &&
@@ -2754,7 +2836,11 @@ enum GCDAsyncSocketConfig
 
     int aStateIndex = stateIndex;
     
-    [self connectSocket:socketFD address:address stateIndex:aStateIndex];
+#warning experiment
+    if (!self.isTFOEnabled)
+        [self connectSocket:socketFD address:address stateIndex:aStateIndex];
+    else
+        [self connectSocketFastOpen:socketFD address:address stateIndex:aStateIndex];
     
     if (alternateAddress)
     {
@@ -6278,6 +6364,13 @@ enum GCDAsyncSocketConfig
 	
 	NSAssert(currentWrite, @"Trying to complete current write when there is no current write.");
 	
+#warning experiment
+    if (self.fastOpenData && self.isTFOEnabled) {
+        dispatch_async(socketQueue, ^{ @autoreleasepool {
+            [self didConnect:stateIndex];
+        }});
+        self.fastOpenData = nil;
+    }
 
 	__strong id theDelegate = delegate;
 	
